@@ -31,17 +31,11 @@ library(colorRamps)
 library(proj4)
 library(validate)
 library(stringr)
-parking <- read.csv("parking-citations.csv", stringsAsFactors = FALSE)
+FTP<- read.csv("FTP.csv", stringsAsFactors = FALSE)
 ```
 
 ## Intro: 
 
-```{r}
-# Naming our data set and only keeping the variables we are going to use
-FTP <- parking[-1, -4:-12, -15]
-# Now we will limit the data set to the last year
-FTP <- FTP %>% filter(Issue.Date >= "2018-01-23")
-```
 
 ## Cleaning our Data
 
@@ -138,7 +132,6 @@ TopViolationsLastYears <- FTP %>%
   filter(Violation.Description %in%
            TopViolations$Violation.Description)
 
-TopViolationsLastYears$Issue.Date
 
 p <- ggplot(TopViolationsLastYears, aes(Issue.Date)) + 
   geom_bar(aes(fill=Violation.Description), stat='count')
