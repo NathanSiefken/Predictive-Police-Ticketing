@@ -1,0 +1,281 @@
+---
+title: "FinalReport"
+author: "Nathan Siefken"
+date: "1/31/2019"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, warning=FALSE}
+# This code chunk simply makes sure that all the libraries used here are installed. 
+packages <- c("knitr","dplyr",  "tidyr", "caret", "ggplot2", "plotly","lubridate","leaflet", "stringr")
+if ( length(missing_pkgs <- setdiff(packages, rownames(installed.packages()))) > 0) {
+message("Installing missing package(s): ", paste(missing_pkgs, collapse = ", "))
+install.packages(missing_pkgs)
+}
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# loading libraries
+library(tidyr) 
+library(dplyr)
+library(ggplot2)
+library(lubridate) # for working with dates
+library(plotly) # for interactive plots
+library(janitor)
+library(leaflet) # Geomapping
+library(colorRamps)
+library(proj4)
+library(validate)
+library(stringr)
+parking <- read.csv("parking-citations.csv", stringsAsFactors = FALSE)
+```
+
+## Intro: 
+
+```{r}
+# Naming our data set and only keeping the variables we are going to use
+FTP <- parking[-1, -4:-12, -15]
+# Now we will limit the data set to the last year
+FTP <- FTP %>% filter(Issue.Date >= "2018-01-23")
+```
+
+## Cleaning our Data
+
+We will combine the Issue.Date and the Issue.Time into it's own column. To do this we will need to restucture the data
+into a time series friendly format.
+
+Now there is time stamp on all the dates, "T00:00:00", that needs to be removed.
+```{r}
+#Removing excess information
+FTP$Issue.Date <- sub("T.*", "", FTP$Issue.Date)
+```
+
+We will use some string processing techniqes to clean up our Issue.Time column
+
+```{r pressure, echo=FALSE}
+#Now to put our time into a format that we can use
+FTP$Issue.time<-sub("(\\d*)(\\d{2})", "\\1:\\2", FTP$Issue.time) # put in delimitter
+# The single digit strings were missed, so this code will convert them
+FTP$Issue.time <- str_replace(FTP$Issue.time, "^([0-9])$",":0\\1")
+# Now we will need to pad our times with a 0 before the ":" for all data that was less than 1:00
+FTP$Issue.time <- sprintf("%04s", FTP$Issue.time)
+```
+Let's take a look at the data and see if there is anything else we can wrangle
+
+We can see in Latitude and Longitude a default value of 99999 that will need to be removed. 
+
+```{r}
+##We can notice that there is a default of 99999 when a cordinate isn't entered. We will remove these
+FTP<- FTP %>%
+  filter(Latitude != 99999) 
+```
+
+Now for converting the cordinates from US feet to Logitutde and Latitude cordinates
+
+```{r}
+#Create projection element to convert from US Feet coordinates to normal lat lon
+pj <- "+proj=lcc +lat_1=34.03333333333333 +lat_2=35.46666666666667 +lat_0=33.5 +lon_0=-118 +x_0=2000000 +y_0=500000.0000000002 +ellps=GRS80 +datum=NAD83 +to_meter=0.3048006096012192 no_defs"
+
+#Add converted latitude longitude to FTP dataframe
+FTP<- cbind(FTP, data.frame(project(data.frame(FTP$Latitude, FTP$Longitude), proj = pj, inverse = TRUE)))
+str(FTP)
+FTP <- FTP[-9:-10] #This removes the Latitude and Logitude in Feet from our table
+names(FTP)[c(9, 10)] <- c('Longitude', 'Latitude') #Rename column names of converted longitude latitude
+# Now our data is looking clean and usable
+summary(FTP)
+```
+
+After all the cleaning of our data, now we can format date and time, so we can better work with it in R
+
+```{r}
+FTP$Date <- as.POSIXlt(paste(FTP$Issue.Date, FTP$Issue.time), format="%Y-%m-%d %H:%M")
+```
+Now lets identify the weekday each ticket was given and put it into a column
+```{r}
+FTP$Weekdays <- weekdays(FTP$Date)
+```
+We can also store the hour of the day that the tickets were given and add a column
+```{r}
+FTP$Hour <- FTP$Date$hour
+summary(FTP)
+```
+
+
+```{r}
+sum(is.na(FTP)) #check for how many NAs there are
+FTP <- na.omit(FTP)# Very few for this many observation (less than 1%)
+FTP <- FTP[-11]
+summary(FTP)
+```
+:Analysing the data
+First lets see the revenue they generated in a year
+```{r}
+revenue <- sum(FTP$Fine.amount)
+revenue
+```
+
+Filter top 10 Violations
+```{r}
+TopViolations <- FTP %>% 
+  group_by(Violation.Description) %>% 
+  tally() %>% 
+  arrange(-n) %>% 
+  head(10)
+
+TopViolations
+```
+
+Now lets graph top 10 Violations throughout the year
+
+```{r}
+
+#I need to make this for month and not year
+TopViolationsLastYears <- FTP %>% 
+  filter(Violation.Description %in%
+           TopViolations$Violation.Description)
+
+TopViolationsLastYears$Issue.Date
+
+p <- ggplot(TopViolationsLastYears, aes(Issue.Date)) + 
+  geom_bar(aes(fill=Violation.Description), stat='count')
+#Plot the data), stat='count')
+ggplotly(p)
+```
+
+
+Lets see if we can find some more patterns in the data
+
+```{r}
+#This one would be better for a month
+DailyParkingViolation <- FTP %>%
+  group_by(Issue.Date) %>%
+  tally() %>%
+  ggplot(aes(x=Issue.Date, y=n)) +
+  geom_point()
+
+DailyParkingViolation
+
+```
+
+
+It appears there is a cloud of data points towards the top and the bottom of the graph. That is interesting, and we will further need to investigate what this could be.
+
+```{r}
+table(FTP$Weekday)
+
+```
+
+```{r}
+table(FTP$Hour)
+```
+
+
+
+We will save this table as a data frame:
+```{r}
+WeekdayCounts = as.data.frame(table(FTP$Weekday))
+```
+
+Create our plot
+
+```{r}
+ggplot(WeekdayCounts, aes(x=Var1, y=Freq)) + geom_line(aes(group=1))
+```
+
+It will be easier to understand the data if the days are in order
+Lets lable our X and Y axis:
+```{r}
+WeekdayCounts$Var1 = factor(WeekdayCounts$Var1, ordered=TRUE, levels=c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday","Saturday")) #We can change the Var1 variable to be an ordered factor variable
+ggplot(WeekdayCounts, aes(x=Var1, y=Freq)) + geom_line(aes(group=1)) +
+  xlab("Day of the Week") + ylab("Total Ticket  Given Out")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+```
+
+
+Adding the Hour of the Day
+
+Create a counts table for the weekday and hour:
+```{r}
+table(FTP$Weekday, FTP$Hour)
+```
+
+We will save this as a data frame 
+```{r}
+DayHourCounts = as.data.frame(table(FTP$Weekday, FTP$Hour))
+DayHourCounts$Hour = as.numeric(as.character(DayHourCounts$Var2))# Convert the second variable, Var2, to numbers and call it Hour:
+ggplot(DayHourCounts, aes(x=Hour, y=Freq)) + geom_line(aes(group=Var1))# Create out plot:
+```
+
+# Change the colors
+```{r}
+# Fix the order of the days:
+
+ggplot(DayHourCounts, aes(x=Hour, y=Freq)) + geom_line(aes(group=Var1, color=Var1), size=2)
+
+
+```
+
+# Separate the weekends from the weekdays:
+```{r}
+DayHourCounts$Type = ifelse((DayHourCounts$Var1 == "Sunday") | (DayHourCounts$Var1 == "Saturday"),
+                            "Weekend", "Weekday")
+# Redo our plot, this time coloring by Type:
+
+ggplot(DayHourCounts, aes(x=Hour, y=Freq)) + geom_line(aes(group=Var1, color=Type), size=2, alpha=0.5) 
+
+```
+
+
+
+# Make a heatmap:
+
+```{r}
+# Fix the order of the days:
+DayHourCounts$Var1 = factor(DayHourCounts$Var1, ordered=TRUE, levels=c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+ggplot(DayHourCounts, aes(x = Hour, y = Var1)) + geom_tile(aes(fill = Freq))
+```
+
+
+# Change the label on the legend, and get rid of the y-label:
+```{r}
+ggplot(DayHourCounts, aes(x = Hour, y = Var1)) + geom_tile(aes(fill = Freq)) +
+  scale_fill_gradient(name="Total Tickets Given") + 
+  theme(axis.title.y = element_blank())
+```
+
+
+# Change the color scheme
+```{r}
+ggplot(DayHourCounts, aes(x = Hour, y = Var1)) + geom_tile(aes(fill = Freq)) +
+  scale_fill_gradient(name="Total Tickets Given", low="white", high="red") +
+  theme(axis.title.y = element_blank())
+```
+
+
+# The heatmap confirms that 8am, 10, and 12 am are the most popular times to get a ticket
+
+
+```{r}
+HotSpot1 <- FTP %>% filter(Violation.Description == c("NO PARK/STREET CLEAN","METER EXP.", "RED ZONE", "PREFERENTIAL PARKING",
+  "DISPLAY OF TABS", "NO PARKING","DISPLAY OF PLATES","PARKED OVER TIME LIMIT", "WHITE ZONE","NO STOP/STANDING",
+  "BLOCKING DRIVEWAY","STANDNG IN ALLEY"))
+
+table(HotSpot1$Violation.Description)
+```
+
+
+```{r}
+# This is my reactive map # Click on the number and the map will show you 
+# I think I should make this just for a month
+leaflet(data = HotSpot1) %>% addTiles() %>% addMarkers(
+  ~Longitude, ~Latitude,clusterOptions = markerClusterOptions()
+)
+```
+
+
+
